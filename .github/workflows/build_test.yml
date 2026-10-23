@@ -116,11 +116,35 @@ jobs:
       - name: "[Windows] Build"
         if: startsWith(matrix.config.os, 'windows')
         run: |
-          cmake -B build -S . -A ${{ matrix.config.platform }} -D USE_CLANG_TIDY=On -D "CMAKE_PREFIX_PATH=${{ matrix.config.ecm-path }}"
+          cmake -B build -S . -A ${{ matrix.config.platform }} -D USE_CLANG_TIDY=On -D PORTABLE_VERSION=On -D "CMAKE_PREFIX_PATH=${{ matrix.config.ecm-path }}"
           cmake --build build -j4 --config Release
           mkdir build/out
           cp build/${{ matrix.config.binary }} build/out
           cp "${{ matrix.config.ecm-path }}/bin/KF6SyntaxHighlighting.dll" build/out
+
+      - name: "[Windows] Deploy runtime dependencies"
+        if: startsWith(matrix.config.os, 'windows')
+        shell: pwsh
+        run: |
+          windeployqt --release --no-translations --no-compiler-runtime build/out/cpeditor.exe
+          if ($LASTEXITCODE -ne 0) { throw "Qt deployment failed" }
+          $crt = Get-ChildItem "$env:VCToolsRedistDir/${{ matrix.config.arch }}/Microsoft.*.CRT/*.dll"
+          if (!$crt) { throw "Visual C++ runtime files were not found" }
+          Copy-Item $crt.FullName build/out
+          Copy-Item LICENSE build/out
+          foreach ($file in @('Qt6Core.dll', 'Qt6Gui.dll', 'Qt6Widgets.dll', 'platforms/qwindows.dll')) {
+            if (!(Test-Path "build/out/$file")) { throw "Missing deployed runtime: $file" }
+          }
+
+      - name: "[Windows] Check the standalone artifact"
+        if: startsWith(matrix.config.os, 'windows')
+        shell: pwsh
+        run: |
+          # Do not let the Qt installation on the runner hide missing DLLs/plugins.
+          $env:PATH = "$env:SystemRoot/System32;$env:SystemRoot"
+          Remove-Item Env:QT_PLUGIN_PATH -ErrorAction SilentlyContinue
+          $process = Start-Process -FilePath ./build/out/cpeditor.exe -ArgumentList '--version' -WindowStyle Hidden -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Standalone artifact exited with code $($process.ExitCode)" }
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v7
